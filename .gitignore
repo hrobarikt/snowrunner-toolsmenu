@@ -1,0 +1,25 @@
+# Build output
+build/
+out/
+dist/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.exp
+
+# Local experiments and captures. Nothing here is ever committed.
+.scratch/
+logs/
+*.log
+
+# Editors
+.vs/
+.vscode/
+*.user
+CMakeSettings.json
+
+# Local, undocumented signature override (developer iteration only)
+signatures.override.json
