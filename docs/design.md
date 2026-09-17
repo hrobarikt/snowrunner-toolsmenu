@@ -23,9 +23,13 @@ reads, so it comes with the menu rather than as its own toggle.
 - **One desktop window**, opened from the tray, for when something is wrong: a
   toggle, a status line that always says something true, the hotkey setting,
   and a collapsed diagnostics panel with Copy and Save.
-- **Diagnostics** covers two cases -- a live report while the game runs, and a
-  *Scan a game file...* picker for an executable the author does not own, so a
-  user on another store can produce a report without touching a command line.
+- **Diagnostics** is a live report, produced while the game runs. There is no
+  *Scan a game file...* picker: Steam ships the executable SteamStub-wrapped
+  with `.text` encrypted on disk, so a file scan matches nothing until the game
+  has launched and decrypted itself in memory. Since a user reporting a problem
+  has the game running anyway, the live report covers that case and also
+  cross-checks the resolved addresses against each other, which a file scan
+  cannot. `srtm-scan.exe --file` stays as an author-only command-line option.
 - **Closing the tool restores the game**: menu off, hook removed, original
   bytes verified back, module unloaded.
 
@@ -86,7 +90,8 @@ patched build without a rebuild cycle; it is not shipped or mentioned.
 What makes a new build supportable is the diagnostics report: which signatures
 resolved, at which RVAs, with how many matches, plus the executable's version
 and hash. That is what turns "it doesn't work" into a fixable bug report, and
-it is the only route to supporting a store the author does not own.
+it is the only route to supporting a store the author does not own. It has to
+come from a running game, for the reason given under Product shape.
 
 Verification is manual. Nothing meaningful here is CI-testable; the game has to
 be launched and looked at.
