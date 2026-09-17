@@ -119,14 +119,25 @@ InjectResult InjectLibrary(DWORD pid, const std::wstring& dll_path, std::wstring
             // The module's own work happens on threads its entry point starts,
             // so this waits only for the load itself.
             const DWORD waited = WaitForSingleObject(thread, 15000);
-            DWORD loaded = 0;
-            GetExitCodeThread(thread, &loaded);
+            DWORD exit_code = 0;
+            GetExitCodeThread(thread, &exit_code);
             CloseHandle(thread);
+            // A thread exit code is 32 bits and LoadLibraryW returns a 64-bit
+            // HMODULE, so a zero exit code is not proof of failure: the module
+            // list is. A timed-out loader is asked nothing, because its answer
+            // has not happened yet.
+            const bool loaded =
+                exit_code != 0 || IsModuleLoaded(pid, dll_path);
             if (waited != WAIT_OBJECT_0) {
                 if (detail != nullptr) {
                     *detail = L"The game did not finish loading the module.";
                 }
-            } else if (loaded == 0) {
+                // The loader thread is still running and still reading the path
+                // out of the buffer below, so it is deliberately leaked: a few
+                // hundred bytes in the game's address space, against freeing
+                // memory out from under a live thread.
+                remote = nullptr;
+            } else if (!loaded) {
                 if (detail != nullptr) {
                     *detail = L"The game refused the module. It may be the wrong "
                               L"architecture, or blocked by anti-cheat or antivirus.";
