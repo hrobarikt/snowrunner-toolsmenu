@@ -57,8 +57,16 @@ ToolsMenuStatus RequestSetMenu(bool enable);
 // Which key toggles the menu. Takes effect on the next frame.
 void SetHotkey(uint32_t virtual_key);
 
-// Turns off a menu of ours, removes the hook, waits for the module to go cold
-// and unloads it. Must not be called from the game's thread.
-void RequestDetach();
+// Turns off a menu of ours through the game's own destroy path while the hook
+// is still in, then removes the hook and waits for the module to go cold. Runs
+// on the calling thread, which must not be the game's own.
+//
+// True means the module is cold and the caller -- which is a thread this module
+// owns, and therefore the only one safe to unload from -- should finish with
+// FreeLibraryAndExitThread. False means the patch is already gone but a thread
+// was still inside; the module stays loaded and a second detach completes it.
+bool DetachModule();
+
+HMODULE ModuleHandle();
 
 }  // namespace srtm

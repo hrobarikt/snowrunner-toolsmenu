@@ -3,6 +3,7 @@
 #include "module.h"
 
 #include "frame_hook.h"
+#include "pipe.h"
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -16,6 +17,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         // resort -- an unload nobody asked for, or the process going away.
         // Suspending threads or sleeping under the loader lock would deadlock
         // it, so only the patched bytes go back.
+        srtm::StopPipeServer();
         srtm::RestoreFrameHookBytesOnly();
     }
     return TRUE;

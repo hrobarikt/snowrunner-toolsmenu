@@ -10,6 +10,7 @@
 
 #include "frame_hook.h"
 #include "image.h"
+#include "pipe.h"
 #include "tools_menu_scan.h"
 
 namespace srtm {
@@ -167,40 +168,6 @@ DWORD WINAPI WorkerThread(LPVOID) {
     return 0;
 }
 
-DWORD WINAPI DetachThread(LPVOID) {
-    SetState(ModuleState::Detaching);
-
-    // A menu of ours is taken away through the game's own destroy path, on the
-    // game's thread, while the hook that reaches that thread is still in.
-    if (ToolsMenuOwned() && IsFrameHookInstalled()) {
-        RequestSetMenu(false);
-    }
-
-    // From here the drain point stops doing work, so the hook can come out from
-    // under a thread that is already on its way into it.
-    InterlockedExchange(&g_running, 0);
-
-    bool verified = false;
-    bool quiescent = false;
-    RemoveFrameHook(&verified, &quiescent);
-
-    EnterCriticalSection(&g_status_lock);
-    g_status.hook_installed = IsFrameHookInstalled();
-    g_status.state = ModuleState::Detached;
-    LeaveCriticalSection(&g_status_lock);
-
-    if (!quiescent) {
-        // A thread is still inside the module or on a trampoline. The patch is
-        // already gone, so the game is whole; only the unload waits, and a
-        // second detach finishes it once that thread is out.
-        return 0;
-    }
-
-    // Unload from a module-owned thread, after everything above is done, so no
-    // outside FreeLibrary races a thread still executing in here.
-    FreeLibraryAndExitThread(g_self, 0);
-}
-
 }  // namespace
 
 void OnFrame() {
@@ -225,6 +192,11 @@ bool StartModule(HMODULE self) {
         DeleteCriticalSection(&g_status_lock);
         return false;
     }
+    // The pipe comes up before the scan finishes, so the app can connect
+    // straight away and watch the state go from Scanning to whatever it turns
+    // out to be, rather than guessing whether the module is there at all.
+    StartPipeServer();
+
     g_worker = CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
     if (g_worker == nullptr) {
         CloseHandle(g_queue_done);
@@ -284,11 +256,32 @@ void SetHotkey(uint32_t virtual_key) {
     LeaveCriticalSection(&g_status_lock);
 }
 
-void RequestDetach() {
-    const HANDLE thread = CreateThread(nullptr, 0, DetachThread, nullptr, 0, nullptr);
-    if (thread != nullptr) {
-        CloseHandle(thread);
+bool DetachModule() {
+    SetState(ModuleState::Detaching);
+
+    // A menu of ours is taken away through the game's own destroy path, on the
+    // game's thread, while the hook that reaches that thread is still in.
+    if (ToolsMenuOwned() && IsFrameHookInstalled()) {
+        RequestSetMenu(false);
     }
+
+    // From here the drain point stops doing work, so the hook can come out from
+    // under a thread that is already on its way into it.
+    InterlockedExchange(&g_running, 0);
+
+    bool verified = false;
+    bool quiescent = false;
+    RemoveFrameHook(&verified, &quiescent);
+
+    EnterCriticalSection(&g_status_lock);
+    g_status.hook_installed = IsFrameHookInstalled();
+    g_status.menu_on = ToolsMenuOwned();
+    g_status.state = ModuleState::Detached;
+    LeaveCriticalSection(&g_status_lock);
+
+    return quiescent;
 }
+
+HMODULE ModuleHandle() { return g_self; }
 
 }  // namespace srtm
