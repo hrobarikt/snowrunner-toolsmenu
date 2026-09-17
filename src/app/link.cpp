@@ -25,7 +25,6 @@ std::atomic<bool> g_stop{false};
 
 // One pending command at a time. The window can only produce them as fast as a
 // person can click, and each is answered before the next poll.
-std::atomic<bool> g_want_attach{false};
 std::atomic<bool> g_want_detach{false};
 std::atomic<int> g_want_menu{-1};        // -1 none, 0 off, 1 on
 
@@ -66,9 +65,10 @@ void SaveHotkey(uint32_t virtual_key) {
     RegCloseKey(key);
 }
 
-// Set by a detach, so the worker stops putting the module back into a game the
-// user just asked it to leave. Cleared by an attach, or by a new game.
-std::atomic<bool> g_detached_by_user{false};
+// Set by the detach on exit, so that the worker does not put the module
+// straight back into the game in the moment between the detach finishing and
+// the process ending. Cleared by a new game.
+std::atomic<bool> g_detached{false};
 
 void SetTrouble(const std::wstring& text) {
     std::lock_guard<std::mutex> guard(g_lock);
@@ -223,7 +223,7 @@ void WorkerLoop() {
             // A different game process is a clean slate: whatever the user
             // asked of the last one does not carry over.
             known_pid = pid;
-            g_detached_by_user.store(false);
+            g_detached.store(false);
             std::lock_guard<std::mutex> guard(g_lock);
             g_view = LinkView{};
         }
@@ -235,7 +235,6 @@ void WorkerLoop() {
                 g_view.module_present = false;
                 g_view.pid = 0;
             }
-            g_want_attach.store(false);
             g_want_detach.store(false);
             g_want_menu.store(-1);
             Sleep(500);
@@ -246,10 +245,6 @@ void WorkerLoop() {
             std::lock_guard<std::mutex> guard(g_lock);
             g_view.game_running = true;
             g_view.pid = pid;
-        }
-
-        if (g_want_attach.exchange(false)) {
-            g_detached_by_user.store(false);
         }
 
         ResponseHeader header = {};
@@ -272,7 +267,7 @@ void WorkerLoop() {
         }
 
         if (detach) {
-            g_detached_by_user.store(true);
+            g_detached.store(true);
             {
                 std::lock_guard<std::mutex> guard(g_lock);
                 g_view.busy = true;
@@ -307,10 +302,10 @@ void WorkerLoop() {
                 g_view.hook_installed = false;
                 g_view.menu_on = false;
             }
-            // Nothing is listening. Unless the user asked the module to leave,
-            // this is a game that has just appeared, and attaching to it is the
-            // whole job of the tray.
-            if (!g_detached_by_user.load()) {
+            // Nothing is listening. Unless this app is on its way out, that is
+            // a game that has just appeared, and attaching to it is the whole
+            // job of the tray.
+            if (!g_detached.load()) {
                 Attach(pid);
             }
         }
@@ -341,14 +336,11 @@ LinkView GetLinkView() {
     return g_view;
 }
 
-void RequestAttach() { g_want_attach.store(true); }
 void RequestMenu(bool on) { g_want_menu.store(on ? 1 : 0); }
 void RequestHotkey(uint32_t virtual_key) {
     g_desired_hotkey.store(virtual_key);
     SaveHotkey(virtual_key);
 }
-void RequestDetachModule() { g_want_detach.store(true); }
-
 void DetachAndWait(unsigned timeout_ms) {
     {
         std::lock_guard<std::mutex> guard(g_lock);
@@ -356,7 +348,7 @@ void DetachAndWait(unsigned timeout_ms) {
             return;
         }
     }
-    RequestDetachModule();
+    g_want_detach.store(true);
     const ULONGLONG deadline = GetTickCount64() + timeout_ms;
     while (GetTickCount64() < deadline) {
         Sleep(50);
@@ -366,7 +358,5 @@ void DetachAndWait(unsigned timeout_ms) {
         }
     }
 }
-
-bool DetachRequested() { return g_detached_by_user.load(); }
 
 }  // namespace srtm

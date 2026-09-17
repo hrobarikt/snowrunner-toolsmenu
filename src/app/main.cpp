@@ -199,9 +199,7 @@ std::string StatusLine(const srtm::LinkView& view) {
         return "Waiting for SnowRunner. Start the game normally.";
     }
     if (!view.module_present) {
-        return srtm::DetachRequested()
-                   ? "Detached. The game is untouched; press Attach to go back in."
-                   : "SnowRunner is running. Getting in...";
+        return "SnowRunner is running. Getting in...";
     }
     switch (static_cast<srtm::ModuleState>(view.state)) {
         case srtm::ModuleState::Scanning:
@@ -350,19 +348,6 @@ void DrawWindow(HWND window) {
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(only while the game window has focus)");
-
-    ImGui::Spacing();
-    if (view.module_present) {
-        if (ImGui::Button("Detach")) {
-            srtm::RequestDetachModule();
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("Removes everything from the game, which keeps running.");
-    } else if (view.game_running) {
-        if (ImGui::Button("Attach")) {
-            srtm::RequestAttach();
-        }
-    }
 
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Diagnostics")) {

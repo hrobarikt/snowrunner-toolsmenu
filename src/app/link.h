@@ -45,22 +45,16 @@ void StopLink();
 
 LinkView GetLinkView();
 
-// All of these return immediately. The worker picks them up, and the next
-// snapshot says what happened.
-void RequestAttach();
+// Both return immediately. The worker picks them up, and the next snapshot
+// says what happened. There is no Attach or Detach here: attaching is what the
+// tray does by itself, and detaching is what Exit does.
 void RequestMenu(bool on);
 void RequestHotkey(uint32_t virtual_key);
-void RequestDetachModule();
 
 // Asks the module to leave and waits for it to go, up to `timeout_ms`. Exiting
 // the app restores the game, so this is what Exit does before shutting down.
 // A kill cannot honour it, which is why a forced end leaves the module loaded
 // until the game closes.
 void DetachAndWait(unsigned timeout_ms);
-
-// True while the app should keep the module out of the game: set by a detach,
-// cleared by an attach. Without it the worker would put the module straight
-// back after the user asked it to leave.
-bool DetachRequested();
 
 }  // namespace srtm
