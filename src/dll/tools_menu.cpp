@@ -171,8 +171,14 @@ ToolsMenuStatus SetToolsMenu(bool enable, ToolsMenuObservation* observation) {
     void* system = reinterpret_cast<void*>(system_object);
 
     if (enable) {
-        // A world with no terrain is a menu or a loading screen. The binding
-        // allocates against it, so it has to be there.
+        // The binding allocates against the terrain, so it has to be there.
+        // This excludes loading screens only. The main menu is a level like
+        // any other -- `level_main_menu_us18`, with a terrain -- so it passes,
+        // and the menu can be turned on there. Verified in the main menu on a
+        // fresh launch, 2026-09-18: it works and breaks nothing, so it is
+        // left alone. Refusing outside a playable world would need the level
+        // id, campaign flag and mode value from docs/runtime-discovery.md,
+        // none of which are in the layout.
         if (*reinterpret_cast<const uint64_t*>(game_logic + g_layout.terrain_offset) == 0) {
             return ToolsMenuStatus::WorldUnavailable;
         }
