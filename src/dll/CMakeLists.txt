@@ -17,3 +17,13 @@ add_library(srtm_tools_menu STATIC
 
 target_include_directories(srtm_tools_menu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(srtm_tools_menu PUBLIC srtm_scanner)
+
+# The injected module itself. It scans, hooks, owns the menu and detaches; the
+# tray app injects it and (from the next step) talks to it over a pipe.
+add_library(srtm_dll SHARED
+    dllmain.cpp
+    module.cpp
+)
+
+set_target_properties(srtm_dll PROPERTIES OUTPUT_NAME "srtm")
+target_link_libraries(srtm_dll PRIVATE srtm_frame_hook srtm_tools_menu)
