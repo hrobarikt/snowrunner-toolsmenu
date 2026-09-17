@@ -15,8 +15,11 @@ add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 # and the injected DLL must not depend on a CRT the game does not have.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+add_subdirectory(third_party/imgui)
 add_subdirectory(src/protocol)
+add_subdirectory(src/inject)
 add_subdirectory(src/scanner)
 add_subdirectory(src/dll)
+add_subdirectory(src/app)
 add_subdirectory(tools/scan)
 add_subdirectory(tools/inject)
