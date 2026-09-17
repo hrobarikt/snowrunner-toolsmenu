@@ -27,7 +27,43 @@ std::atomic<bool> g_stop{false};
 std::atomic<bool> g_want_attach{false};
 std::atomic<bool> g_want_detach{false};
 std::atomic<int> g_want_menu{-1};        // -1 none, 0 off, 1 on
-std::atomic<int> g_want_hotkey{-1};      // -1 none
+
+// The hotkey the user chose, which is a wish rather than a command: the worker
+// pushes it whenever the module disagrees, so it survives a re-attach and a
+// game restart as well as a change made here.
+std::atomic<uint32_t> g_desired_hotkey{VK_HOME};
+
+// The one thing the app remembers between runs. A keybinding is not the kind of
+// configuration the design rules out -- that is about patterns and offsets,
+// which no user should be editing -- so it lives in the registry rather than a
+// file beside the exe.
+constexpr wchar_t kSettingsKey[] = L"Software\\snowrunner-toolsmenu";
+constexpr wchar_t kHotkeyValue[] = L"HotkeyVirtualKey";
+
+uint32_t LoadHotkey() {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    DWORD type = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, kHotkeyValue, RRF_RT_REG_DWORD,
+                     &type, &value, &size) != ERROR_SUCCESS) {
+        return VK_HOME;
+    }
+    // A key code out of range would leave the toggle unreachable with no way to
+    // say so, so anything unexpected falls back to the default.
+    return value <= 0xFF ? static_cast<uint32_t>(value) : VK_HOME;
+}
+
+void SaveHotkey(uint32_t virtual_key) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0, KEY_SET_VALUE,
+                        nullptr, &key, nullptr) != ERROR_SUCCESS) {
+        return;
+    }
+    const DWORD value = virtual_key;
+    RegSetValueExW(key, kHotkeyValue, 0, REG_DWORD,
+                   reinterpret_cast<const BYTE*>(&value), sizeof(value));
+    RegCloseKey(key);
+}
 
 // Set by a detach, so the worker stops putting the module back into a game the
 // user just asked it to leave. Cleared by an attach, or by a new game.
@@ -179,7 +215,6 @@ void WorkerLoop() {
             g_want_attach.store(false);
             g_want_detach.store(false);
             g_want_menu.store(-1);
-            g_want_hotkey.store(-1);
             Sleep(500);
             continue;
         }
@@ -199,8 +234,19 @@ void WorkerLoop() {
         bool answered = false;
 
         const int menu = g_want_menu.exchange(-1);
-        const int hotkey = g_want_hotkey.exchange(-1);
         const bool detach = g_want_detach.exchange(false);
+
+        // Pushed whenever the module's idea of the hotkey is not the user's.
+        // The module always starts on its own default, so this is also what
+        // restores the choice after an attach.
+        uint32_t hotkey = 0;
+        {
+            std::lock_guard<std::mutex> guard(g_lock);
+            const uint32_t desired = g_desired_hotkey.load();
+            if (g_view.module_present && g_view.hotkey_vk != desired) {
+                hotkey = desired;
+            }
+        }
 
         if (detach) {
             g_detached_by_user.store(true);
@@ -215,9 +261,8 @@ void WorkerLoop() {
                 g_view.busy = true;
             }
             answered = Exchange(pid, Opcode::SetMenu, menu != 0 ? 1u : 0u, &header, &report);
-        } else if (hotkey >= 0) {
-            answered = Exchange(pid, Opcode::SetHotkey, static_cast<uint32_t>(hotkey),
-                                &header, &report);
+        } else if (hotkey != 0) {
+            answered = Exchange(pid, Opcode::SetHotkey, hotkey, &header, &report);
         } else {
             answered = Exchange(pid, Opcode::Status, 0, &header, &report);
         }
@@ -261,6 +306,7 @@ void WorkerLoop() {
 
 bool StartLink(const std::wstring& dll_path) {
     g_dll_path = dll_path;
+    g_desired_hotkey.store(LoadHotkey());
     g_stop.store(false);
     g_worker = std::thread(WorkerLoop);
     return true;
@@ -281,9 +327,28 @@ LinkView GetLinkView() {
 void RequestAttach() { g_want_attach.store(true); }
 void RequestMenu(bool on) { g_want_menu.store(on ? 1 : 0); }
 void RequestHotkey(uint32_t virtual_key) {
-    g_want_hotkey.store(static_cast<int>(virtual_key));
+    g_desired_hotkey.store(virtual_key);
+    SaveHotkey(virtual_key);
 }
 void RequestDetachModule() { g_want_detach.store(true); }
+
+void DetachAndWait(unsigned timeout_ms) {
+    {
+        std::lock_guard<std::mutex> guard(g_lock);
+        if (!g_view.module_present) {
+            return;
+        }
+    }
+    RequestDetachModule();
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    while (GetTickCount64() < deadline) {
+        Sleep(50);
+        std::lock_guard<std::mutex> guard(g_lock);
+        if (!g_view.module_present) {
+            return;
+        }
+    }
+}
 
 bool DetachRequested() { return g_detached_by_user.load(); }
 

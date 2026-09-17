@@ -5,6 +5,7 @@
 // with no alt-tab; the window exists to say what is happening when that does
 // not work. Closing the window hides it, and only Exit ends the app.
 #include "link.h"
+#include "resource.h"
 
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -376,6 +377,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     window_class.lpfnWndProc = WndProc;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    // Null when no app.ico was present at configure time, so fall back rather
+    // than show nothing.
+    HICON icon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
+    if (icon == nullptr) {
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+    window_class.hIcon = icon;
+    window_class.hIconSm = icon;
     window_class.lpszClassName = L"SnowRunnerToolsMenu";
     RegisterClassExW(&window_class);
 
@@ -395,7 +404,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     g_tray.uID = 1;
     g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_tray.uCallbackMessage = kTrayMessage;
-    g_tray.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    g_tray.hIcon = icon;
     wcscpy_s(g_tray.szTip, kWindowTitle);
     Shell_NotifyIconW(NIM_ADD, &g_tray);
 
@@ -450,6 +459,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         g_swap_chain->Present(1, 0);
     }
 
+    // Leaving restores the game: the menu goes off, the hook comes out and the
+    // module unloads itself, exactly as the Detach button does.
+    srtm::DetachAndWait(3000);
     srtm::StopLink();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
