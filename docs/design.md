@@ -19,17 +19,20 @@ reads, so it comes with the menu rather than as its own toggle.
   stays in the tray. Attach-only: the user launches the game normally through
   Steam, Epic or Xbox, and start order does not matter.
 - **A configurable global hotkey** (default `HOME`) toggles the menu in-game,
-  so the common action needs no alt-tab.
-- **One desktop window**, opened from the tray, for when something is wrong: a
-  toggle, a status line that always says something true, the hotkey setting,
-  and a collapsed diagnostics panel with Copy and Save.
-- **Diagnostics** is a live report, produced while the game runs. There is no
-  *Scan a game file...* picker: Steam ships the executable SteamStub-wrapped
-  with `.text` encrypted on disk, so a file scan matches nothing until the game
-  has launched and decrypted itself in memory. Since a user reporting a problem
-  has the game running anyway, the live report covers that case and also
-  cross-checks the resolved addresses against each other, which a file scan
-  cannot. `srtm-scan.exe --file` stays as an author-only command-line option.
+  so the common action needs no alt-tab. The choice is remembered between runs,
+  in `HKCU\Software\snowrunner-toolsmenu`: a keybinding is not the kind of
+  configuration this design rules out -- that is about patterns and offsets,
+  which no user should be editing.
+- **One desktop window**, shown at startup and reopened from the tray, for when
+  something is wrong: a toggle, a status line that always says something true,
+  the hotkey setting, and a collapsed diagnostics panel with Copy and Save.
+  Closing it hides it; only Exit ends the app.
+- **Diagnostics** is a live report, produced while the game runs: which
+  signatures resolved, at which RVAs, with how many matches, plus the build the
+  executable names itself (its ProductVersion, e.g. 1.886173.SNOW_DLC_18), its
+  file version and its SHA-256. It also cross-checks the resolved addresses
+  against each other. This is the only route to supporting a store the author
+  does not own. `srtm-scan.exe` is the author-only command-line equivalent.
 - **Closing the tool restores the game**: menu off, hook removed, original
   bytes verified back, module unloaded.
 
