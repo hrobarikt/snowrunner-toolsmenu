@@ -335,6 +335,23 @@ ScanReport ScanToolsMenu(const Image& image) {
 std::string FormatReport(const ScanReport& report) {
     std::string text = report.summary + "\n\n";
     char line[320];
+    // Identity first: an RVA means nothing without knowing which build it was
+    // read out of, and a pasted report is all the author gets.
+    if (!report.identity.file.empty()) {
+        text += "  file    " + report.identity.file + "\n";
+        text += "  build   " +
+                (report.identity.build.empty() ? std::string("unknown")
+                                               : report.identity.build) +
+                "\n";
+        text += "  version " +
+                (report.identity.version.empty() ? std::string("unknown")
+                                                 : report.identity.version) +
+                "\n";
+        text += "  sha256  " +
+                (report.identity.sha256.empty() ? std::string("unreadable")
+                                                : report.identity.sha256) +
+                "\n\n";
+    }
     for (const AnchorReport& anchor : report.anchors) {
         const std::string rva = anchor.status == AnchorStatus::Resolved ? Hex(anchor.rva) : "-";
         snprintf(line, sizeof(line), "  %-18s %-13s matches=%u rva=%s%s%s\n", anchor.name.c_str(),

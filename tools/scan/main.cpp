@@ -7,6 +7,7 @@
 // wrapped, so its code only exists decrypted in memory. The file mode is for
 // executables that are not wrapped, such as a build from another store.
 
+#include "build_identity.h"
 #include "tools_menu_scan.h"
 
 #include <windows.h>
@@ -27,6 +28,8 @@ struct Snapshot {
     uint64_t runtime_base = 0;
     bool live = false;
     std::string source;
+    // The file the bytes ultimately came from, for the report's identity block.
+    std::wstring image_path;
 };
 
 bool FindGameModule(DWORD* pid, uint64_t* base, uint32_t* size) {
@@ -75,6 +78,14 @@ bool SnapshotRunningGame(Snapshot* snapshot) {
     if (process == nullptr) {
         fprintf(stderr, "Cannot open SnowRunner.exe (pid %lu): error %lu.\n", pid, GetLastError());
         return false;
+    }
+
+    // The file behind the running process, so a live scan can report the same
+    // version and hash a file scan would.
+    wchar_t image_path[MAX_PATH] = {};
+    DWORD image_path_length = MAX_PATH;
+    if (QueryFullProcessImageNameW(process, 0, image_path, &image_path_length)) {
+        snapshot->image_path.assign(image_path, image_path_length);
     }
     snapshot->bytes.assign(size, 0);
     uint64_t cursor = base;
@@ -156,6 +167,11 @@ bool MapFile(const char* path, Snapshot* snapshot) {
     snapshot->runtime_base = ReadField<uint64_t>(file, nt + 24 + 24);
     snapshot->live = false;
     snapshot->source = path;
+    const int wide = MultiByteToWideChar(CP_ACP, 0, path, -1, nullptr, 0);
+    if (wide > 0) {
+        snapshot->image_path.resize(static_cast<size_t>(wide) - 1);
+        MultiByteToWideChar(CP_ACP, 0, path, -1, snapshot->image_path.data(), wide);
+    }
     return true;
 }
 
@@ -182,7 +198,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Not a 64-bit PE image.\n");
         return 2;
     }
-    const srtm::ScanReport report = srtm::ScanToolsMenu(*image);
+    srtm::ScanReport report = srtm::ScanToolsMenu(*image);
+    report.identity = srtm::IdentifyFile(snapshot.image_path);
     printf("Source: %s\n\n%s", snapshot.source.c_str(), srtm::FormatReport(report).c_str());
     return report.usable ? 0 : 1;
 }

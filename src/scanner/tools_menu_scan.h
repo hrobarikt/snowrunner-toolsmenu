@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "build_identity.h"
 #include "image.h"
 
 #include <cstdint>
@@ -65,6 +66,9 @@ struct ToolsMenuLayout {
 struct ScanReport {
     bool usable = false;
     std::string summary;
+    // Which executable this is about. Filled in by whoever knows the path --
+    // the scan itself sees only bytes -- and printed at the head of the report.
+    BuildIdentity identity;
     std::vector<AnchorReport> anchors;
     std::vector<CheckReport> checks;
     ToolsMenuLayout layout;
