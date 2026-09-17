@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include "protocol.h"
 #include "tools_menu.h"
 
 #include <windows.h>
@@ -21,14 +22,8 @@
 
 namespace srtm {
 
-enum class ModuleState {
-    Scanning,       // the worker is still resolving the build
-    Unsupported,    // the scan did not produce a usable layout
-    Failed,         // the scan was usable but the hook or the menu refused
-    Ready,          // hooked, and the toggle works
-    Detaching,
-    Detached,
-};
+// ModuleState is in protocol.h: it crosses the wire, so it is defined once
+// where both ends can see it.
 
 // Everything the tray app will eventually show, and everything the diagnostics
 // report needs. Copied out under a lock, so a caller never reads it mid-write.
@@ -57,15 +52,23 @@ ToolsMenuStatus RequestSetMenu(bool enable);
 // Which key toggles the menu. Takes effect on the next frame.
 void SetHotkey(uint32_t virtual_key);
 
+// What a detach actually achieved. Two separate answers, because the bytes can
+// be provably back while a thread is still on its way out, and because a failed
+// restoration is the one outcome nobody may round off: it means the game is
+// still patched.
+struct DetachOutcome {
+    bool bytes_verified = false;  // the original bytes are provably back
+    bool cold = false;            // no thread is inside this module any more
+};
+
 // Turns off a menu of ours through the game's own destroy path while the hook
 // is still in, then removes the hook and waits for the module to go cold. Runs
 // on the calling thread, which must not be the game's own.
 //
-// True means the module is cold and the caller -- which is a thread this module
-// owns, and therefore the only one safe to unload from -- should finish with
-// FreeLibraryAndExitThread. False means the patch is already gone but a thread
-// was still inside; the module stays loaded and a second detach completes it.
-bool DetachModule();
+// `cold` means the caller -- which is a thread this module owns, and therefore
+// the only one safe to unload from -- may finish with FreeLibraryAndExitThread.
+// Not cold means the module stays loaded and a second detach completes it.
+DetachOutcome DetachModule();
 
 HMODULE ModuleHandle();
 

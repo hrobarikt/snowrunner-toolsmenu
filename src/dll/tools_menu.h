@@ -12,22 +12,15 @@
 
 #pragma once
 
+#include "protocol.h"
 #include "tools_menu_scan.h"
 
 #include <stdint.h>
 
 namespace srtm {
 
-enum class ToolsMenuStatus {
-    Ok,
-    NotConfigured,      // no usable layout, so there is nothing to call
-    SiteChanged,        // a binding no longer holds the bytes the scanner saw
-    WorldUnavailable,   // no world loaded, or its pointers are not readable
-    MenuPresent,        // a menu is already up, and this module did not make it
-    MenuForeign,        // asked to remove a menu this module does not own
-    MenuFailed,         // the call returned, but the state it left is wrong
-    Faulted,            // the call itself raised
-};
+// ToolsMenuStatus is in protocol.h: it crosses the wire, and one definition
+// is what keeps the app and this module saying the same thing.
 
 // One reading of everything a caller is told about.
 struct ToolsMenuObservation {
@@ -51,8 +44,5 @@ bool ToolsMenuOwned();
 // Turns the menu on or off. Fills `observation` in every case, including the
 // failures, so a status line can always say something true.
 ToolsMenuStatus SetToolsMenu(bool enable, ToolsMenuObservation* observation);
-
-// A short phrase for the status line and the diagnostics report.
-const char* ToolsMenuStatusText(ToolsMenuStatus status);
 
 }  // namespace srtm

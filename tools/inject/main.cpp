@@ -12,6 +12,7 @@
 #include <windows.h>
 
 #include "injector.h"
+#include "pipe_io.h"
 #include "protocol.h"
 
 #include <cstdio>
@@ -30,33 +31,9 @@ std::wstring DefaultDllPath() {
     return path + L"srtm.dll";
 }
 
-const wchar_t* StateName(uint32_t state) {
-    switch (state) {
-        case 0: return L"scanning";
-        case 1: return L"unsupported build";
-        case 2: return L"failed";
-        case 3: return L"ready";
-        case 4: return L"detaching";
-        case 5: return L"detached";
-        default: return L"unknown";
-    }
-}
-
-// Mirrors srtm::ToolsMenuStatus. The module's own text is not on the wire: the
-// tray app will have its own wording, and this is a development tool.
-const wchar_t* CommandName(uint32_t status) {
-    switch (status) {
-        case 0: return L"ok";
-        case 1: return L"not configured";
-        case 2: return L"site changed";
-        case 3: return L"world unavailable";
-        case 4: return L"menu already present";
-        case 5: return L"menu is not ours";
-        case 6: return L"menu call did not take";
-        case 7: return L"call faulted";
-        default: return L"unknown";
-    }
-}
+// The state and status names come from protocol.h, which is where the enums
+// themselves live. This tool used to carry its own copies, keyed by number, and
+// they drifted from the module's.
 
 // One request, one connection. Prints the answer and returns the exit code.
 int Talk(DWORD pid, srtm::Opcode opcode, uint32_t argument, bool print_report) {
@@ -82,17 +59,14 @@ int Talk(DWORD pid, srtm::Opcode opcode, uint32_t argument, bool print_report) {
     srtm::Request request;
     request.opcode = static_cast<uint32_t>(opcode);
     request.argument = argument;
-    DWORD moved = 0;
-    if (!WriteFile(pipe, &request, sizeof(request), &moved, nullptr) ||
-        moved != sizeof(request)) {
+    if (!srtm::WriteAll(pipe, &request, sizeof(request))) {
         wprintf(L"Could not send the request (error %lu).\n", GetLastError());
         CloseHandle(pipe);
         return 1;
     }
 
     srtm::ResponseHeader header = {};
-    if (!ReadFile(pipe, &header, sizeof(header), &moved, nullptr) ||
-        moved != sizeof(header)) {
+    if (!srtm::ReadAll(pipe, &header, sizeof(header))) {
         wprintf(L"No reply (error %lu).\n", GetLastError());
         CloseHandle(pipe);
         return 1;
@@ -106,22 +80,28 @@ int Talk(DWORD pid, srtm::Opcode opcode, uint32_t argument, bool print_report) {
     std::string report;
     if (header.report_length > 0 && header.report_length <= srtm::kMaxReportBytes) {
         report.resize(header.report_length);
-        DWORD read = 0;
-        if (!ReadFile(pipe, report.data(), header.report_length, &read, nullptr) ||
-            read != header.report_length) {
+        if (!srtm::ReadAll(pipe, report.data(), header.report_length)) {
             report.clear();
         }
     }
     CloseHandle(pipe);
 
-    wprintf(L"state        %s\n", StateName(header.state));
+    wprintf(L"state        %S\n",
+            srtm::ModuleStateText(static_cast<srtm::ModuleState>(header.state)));
     wprintf(L"hook         %s\n",
             (header.flags & srtm::kFlagHookInstalled) ? L"installed" : L"not installed");
     wprintf(L"menu         %s\n", (header.flags & srtm::kFlagMenuOn) ? L"on" : L"off");
     wprintf(L"hotkey       vk 0x%02X\n", header.hotkey_vk);
     wprintf(L"frames       %llu\n", static_cast<unsigned long long>(header.frames));
     if (header.flags & srtm::kFlagLastCommandValid) {
-        wprintf(L"last command %s\n", CommandName(header.last_command));
+        wprintf(L"last command %S\n",
+                srtm::ToolsMenuStatusText(
+                    static_cast<srtm::ToolsMenuStatus>(header.last_command)));
+    }
+    if (header.flags & srtm::kFlagUnloading) {
+        wprintf(L"detach       done, the module is unloading\n");
+    } else if (header.flags & srtm::kFlagStillWarm) {
+        wprintf(L"detach       patch out, a thread is still inside; detach again\n");
     }
     if (print_report && !report.empty()) {
         wprintf(L"\n%S\n", report.c_str());

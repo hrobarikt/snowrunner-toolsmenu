@@ -5,6 +5,9 @@
 // with no alt-tab; the window exists to say what is happening when that does
 // not work. Closing the window hides it, and only Exit ends the app.
 #include "link.h"
+// For ModuleState and ToolsMenuStatus: the window puts words to what the module
+// reports, and the names come from the wire rather than from a local copy.
+#include "protocol.h"
 #include "resource.h"
 
 #include "imgui.h"
@@ -200,29 +203,48 @@ std::string StatusLine(const srtm::LinkView& view) {
                    ? "Detached. The game is untouched; press Attach to go back in."
                    : "SnowRunner is running. Getting in...";
     }
-    switch (view.state) {
-        case 0: return "Reading the game. This takes a moment.";
-        case 1: return "This game build is not recognised, so the menu stays off.";
-        case 2: return "The build was recognised but could not be hooked.";
-        case 3: return view.menu_on ? "The tools menu is on." : "Ready. The tools menu is off.";
-        case 4: return "Detaching...";
-        case 5: return "Detached.";
-        default: return "Unknown state.";
+    switch (static_cast<srtm::ModuleState>(view.state)) {
+        case srtm::ModuleState::Scanning:
+            return "Reading the game. This takes a moment.";
+        case srtm::ModuleState::Unsupported:
+            return "This game build is not recognised, so the menu stays off.";
+        case srtm::ModuleState::Failed:
+            return "The build was recognised but could not be hooked.";
+        case srtm::ModuleState::Ready:
+            return view.menu_on ? "The tools menu is on." : "Ready. The tools menu is off.";
+        case srtm::ModuleState::Detaching:
+            return "Detaching...";
+        case srtm::ModuleState::Detached:
+            return "Detached.";
+        case srtm::ModuleState::DetachFailed:
+            return "Detach could not put the game's original code back, so the "
+                   "module is staying in. Close SnowRunner when convenient.";
     }
+    return "Unknown state.";
 }
 
+// The same facts as srtm::ToolsMenuStatusText, said to a user instead of to the
+// author. The terse phrasing stays on the wire side; this is the only place the
+// app puts words to a command result.
 const char* CommandText(uint32_t status) {
-    switch (status) {
-        case 0: return "ok";
-        case 1: return "this game build is not recognised";
-        case 2: return "the game's code changed under us";
-        case 3: return "no world is loaded yet";
-        case 4: return "a tools menu is already open";
-        case 5: return "the open tools menu is not ours to close";
-        case 6: return "the game did not do what the call asks";
-        case 7: return "the game's own call raised";
-        default: return "unknown";
+    switch (static_cast<srtm::ToolsMenuStatus>(status)) {
+        case srtm::ToolsMenuStatus::Ok: return "ok";
+        case srtm::ToolsMenuStatus::NotConfigured:
+            return "this game build is not recognised";
+        case srtm::ToolsMenuStatus::SiteChanged:
+            return "the game's code changed under us";
+        case srtm::ToolsMenuStatus::WorldUnavailable: return "no world is loaded yet";
+        case srtm::ToolsMenuStatus::MenuPresent: return "a tools menu is already open";
+        case srtm::ToolsMenuStatus::MenuForeign:
+            return "the open tools menu is not ours to close";
+        case srtm::ToolsMenuStatus::MenuFailed:
+            return "the game did not do what the call asks";
+        case srtm::ToolsMenuStatus::Faulted: return "the game's own call raised";
+        case srtm::ToolsMenuStatus::Busy: return "another command was still running";
+        case srtm::ToolsMenuStatus::HookStalled:
+            return "the game never picked the command up";
     }
+    return "unknown";
 }
 
 void CopyToClipboard(HWND window, const std::string& text) {
@@ -230,12 +252,19 @@ void CopyToClipboard(HWND window, const std::string& text) {
         return;
     }
     EmptyClipboard();
-    const HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
+    // The report is UTF-8, and CF_TEXT is the system codepage. Widening it is
+    // what keeps a pasted report readable.
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(),
+                                           static_cast<int>(text.size()), nullptr, 0);
+    const HGLOBAL memory =
+        GlobalAlloc(GMEM_MOVEABLE, (static_cast<size_t>(length) + 1) * sizeof(wchar_t));
     if (memory != nullptr) {
-        void* locked = GlobalLock(memory);
-        memcpy(locked, text.c_str(), text.size() + 1);
+        auto* locked = static_cast<wchar_t*>(GlobalLock(memory));
+        MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                            locked, length);
+        locked[length] = L'\0';
         GlobalUnlock(memory);
-        SetClipboardData(CF_TEXT, memory);
+        SetClipboardData(CF_UNICODETEXT, memory);
     }
     CloseClipboard();
 }
@@ -287,7 +316,10 @@ void DrawWindow(HWND window) {
 
     ImGui::Separator();
 
-    const bool can_toggle = view.module_present && view.state == 3 && !view.busy;
+    const bool can_toggle = view.module_present &&
+                            static_cast<srtm::ModuleState>(view.state) ==
+                                srtm::ModuleState::Ready &&
+                            !view.busy;
     ImGui::BeginDisabled(!can_toggle);
     if (ImGui::Button(view.menu_on ? "Turn the tools menu off"
                                    : "Turn the tools menu on",
@@ -414,8 +446,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    // No settings file: the app has nothing to remember between runs, and the
-    // design keeps it that way.
+    // No imgui.ini: the window is one fixed layout, so there is nothing about it
+    // worth remembering. The one thing the app does remember, the hotkey, is in
+    // the registry -- see link.cpp.
     io.IniFilename = nullptr;
     ImGui::StyleColorsDark();
     ImGui_ImplWin32_Init(window);

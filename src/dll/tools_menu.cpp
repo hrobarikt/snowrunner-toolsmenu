@@ -227,18 +227,4 @@ ToolsMenuStatus SetToolsMenu(bool enable, ToolsMenuObservation* observation) {
     return ToolsMenuStatus::Ok;
 }
 
-const char* ToolsMenuStatusText(ToolsMenuStatus status) {
-    switch (status) {
-        case ToolsMenuStatus::Ok:               return "ok";
-        case ToolsMenuStatus::NotConfigured:    return "this game build is not recognised";
-        case ToolsMenuStatus::SiteChanged:      return "the game's code changed under us";
-        case ToolsMenuStatus::WorldUnavailable: return "no world is loaded yet";
-        case ToolsMenuStatus::MenuPresent:      return "a tools menu is already open";
-        case ToolsMenuStatus::MenuForeign:      return "the open tools menu is not ours to close";
-        case ToolsMenuStatus::MenuFailed:       return "the game did not do what the call asks";
-        case ToolsMenuStatus::Faulted:          return "the game's own call raised";
-    }
-    return "unknown";
-}
-
 }  // namespace srtm

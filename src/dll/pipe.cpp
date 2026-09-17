@@ -12,6 +12,7 @@
 
 #include "frame_hook.h"
 #include "module.h"
+#include "pipe_io.h"
 #include "protocol.h"
 
 #include <sddl.h>
@@ -24,32 +25,6 @@ namespace {
 
 HANDLE g_thread = nullptr;
 volatile LONG g_stop = 0;
-
-bool WriteAll(HANDLE pipe, const void* data, DWORD count) {
-    const uint8_t* cursor = static_cast<const uint8_t*>(data);
-    while (count > 0) {
-        DWORD written = 0;
-        if (!WriteFile(pipe, cursor, count, &written, nullptr) || written == 0) {
-            return false;
-        }
-        cursor += written;
-        count -= written;
-    }
-    return true;
-}
-
-bool ReadAll(HANDLE pipe, void* data, DWORD count) {
-    uint8_t* cursor = static_cast<uint8_t*>(data);
-    while (count > 0) {
-        DWORD read = 0;
-        if (!ReadFile(pipe, cursor, count, &read, nullptr) || read == 0) {
-            return false;
-        }
-        cursor += read;
-        count -= read;
-    }
-    return true;
-}
 
 // Everything the module knows, in the shape the wire wants it.
 ResponseHeader StatusHeader(std::string* report) {
@@ -77,11 +52,11 @@ ResponseHeader StatusHeader(std::string* report) {
     return header;
 }
 
-// Fills in the answer. `detach` says the caller must deliver this response and
-// then take the module down; it is the one request whose work outlives the
-// reply.
-ResponseHeader Handle(const Request& request, std::string* report, bool* detach) {
-    *detach = false;
+// Fills in the answer. `unload` says the caller must deliver this response and
+// then take the module out of the process; it is the one request that ends with
+// the code that is running being gone.
+ResponseHeader Handle(const Request& request, std::string* report, bool* unload) {
+    *unload = false;
 
     if (request.magic != kProtocolMagic || request.version != kProtocolVersion) {
         ResponseHeader header;
@@ -111,13 +86,25 @@ ResponseHeader Handle(const Request& request, std::string* report, bool* detach)
             return StatusHeader(report);
 
         case Opcode::Detach: {
-            // The work happens after the reply is on the wire, because the
-            // module may not exist afterwards. What the app is told is what
-            // detach is about to attempt, plus whether it can expect the module
-            // to disappear.
-            *detach = true;
+            // Detach runs here, before the reply, so the reply can say what it
+            // actually achieved rather than what it was about to attempt. Only
+            // the unload itself outlives the response, because that is the one
+            // step after which this code is gone.
+            const DetachOutcome outcome = DetachModule();
             ResponseHeader header = StatusHeader(report);
-            header.state = static_cast<uint32_t>(ModuleState::Detaching);
+            if (!outcome.bytes_verified) {
+                // The patch is not provably out. Unloading now would leave the
+                // game jumping into freed memory, so the module stays put and
+                // says so.
+                header.status = static_cast<uint32_t>(PipeStatus::CommandFailed);
+            } else if (outcome.cold) {
+                *unload = true;
+                header.flags |= kFlagUnloading;
+            } else {
+                // The bytes are back and the game is whole, but a thread is
+                // still inside this module. A second detach finishes it.
+                header.flags |= kFlagStillWarm;
+            }
             return header;
         }
 
@@ -162,36 +149,33 @@ DWORD WINAPI PipeThread(LPVOID) {
         }
         failures = 0;
 
-        bool detach = false;
+        bool unload = false;
         if (ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
             Request request = {};
             if (ReadAll(pipe, &request, sizeof(request))) {
                 std::string report;
-                ResponseHeader header = Handle(request, &report, &detach);
+                ResponseHeader header = Handle(request, &report, &unload);
                 if (WriteAll(pipe, &header, sizeof(header)) &&
                     (report.empty() || WriteAll(pipe, report.data(),
                                                 static_cast<DWORD>(report.size())))) {
                     FlushFileBuffers(pipe);
-                } else {
-                    // The app went away mid-reply. Detaching now would tear the
-                    // hook out for a request nobody is waiting on.
-                    detach = false;
                 }
+                // A reply that did not arrive does not change what happened: by
+                // here a detach has already run, and the module is in whatever
+                // state it reached. Unloading still follows, because staying
+                // loaded with the hook out helps nobody.
             }
             DisconnectNamedPipe(pipe);
         }
         CloseHandle(pipe);
 
-        if (detach) {
-            const bool cold = DetachModule();
-            if (!cold) {
-                // A thread is still inside the module. The patch is out and the
-                // game is whole, so the server keeps running and a second
-                // detach finishes the unload once that thread leaves.
-                continue;
-            }
+        if (unload) {
             LocalFree(descriptor);
+            const HANDLE self_thread = g_thread;
             g_thread = nullptr;
+            if (self_thread != nullptr) {
+                CloseHandle(self_thread);
+            }
             // From a module-owned thread, with the response already delivered,
             // so nothing outside can race a FreeLibrary against a thread still
             // executing in here.

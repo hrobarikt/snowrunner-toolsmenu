@@ -2,6 +2,7 @@
 #include "link.h"
 
 #include "injector.h"
+#include "pipe_io.h"
 #include "protocol.h"
 #include "resource.h"
 
@@ -136,17 +137,13 @@ bool Exchange(DWORD pid, Opcode opcode, uint32_t argument, ResponseHeader* heade
     Request request;
     request.opcode = static_cast<uint32_t>(opcode);
     request.argument = argument;
-    DWORD moved = 0;
-    bool ok = WriteFile(pipe, &request, sizeof(request), &moved, nullptr) &&
-              moved == sizeof(request) &&
-              ReadFile(pipe, header, sizeof(*header), &moved, nullptr) &&
-              moved == sizeof(*header) && header->magic == kProtocolMagic &&
-              header->version == kProtocolVersion;
+    const bool ok = WriteAll(pipe, &request, sizeof(request)) &&
+                    ReadAll(pipe, header, sizeof(*header)) &&
+                    header->magic == kProtocolMagic &&
+                    header->version == kProtocolVersion;
     if (ok && header->report_length > 0 && header->report_length <= kMaxReportBytes) {
         report->resize(header->report_length);
-        DWORD read = 0;
-        if (!ReadFile(pipe, report->data(), header->report_length, &read, nullptr) ||
-            read != header->report_length) {
+        if (!ReadAll(pipe, report->data(), header->report_length)) {
             report->clear();
         }
     }
@@ -190,6 +187,32 @@ void Attach(DWORD pid) {
             SetTrouble(trouble);
             break;
     }
+}
+
+// What the module said its detach achieved. Only an unloading module is gone;
+// the other two endings leave it in the game, and the view has to keep saying
+// so or the status line starts lying about an untouched game.
+void HandleDetachReply(const ResponseHeader& header) {
+    if ((header.flags & kFlagUnloading) != 0) {
+        // Gone before the next poll. Said now rather than showing a stale
+        // "ready" for a third of a second.
+        std::lock_guard<std::mutex> guard(g_lock);
+        g_view.module_present = false;
+        g_view.hook_installed = false;
+        g_view.menu_on = false;
+        return;
+    }
+    if ((header.flags & kFlagStillWarm) != 0) {
+        // The patch is out but a thread is still inside the module. Ask again:
+        // the next poll is 300ms away, and the wait is what finishes the
+        // unload.
+        g_want_detach.store(true);
+        return;
+    }
+    // Detach did not get the original bytes back. The module stays, the state
+    // it published says why, and asking again would not change it.
+    SetTrouble(L"The game's original code could not be put back, so the module "
+               L"is staying loaded. Close SnowRunner when convenient.");
 }
 
 void WorkerLoop() {
@@ -275,13 +298,7 @@ void WorkerLoop() {
         if (answered) {
             PublishReply(pid, header, report);
             if (detach) {
-                // The module unloads itself after replying, so it is gone
-                // before the next poll. Say so now rather than showing a stale
-                // "ready" for a third of a second.
-                std::lock_guard<std::mutex> guard(g_lock);
-                g_view.module_present = false;
-                g_view.hook_installed = false;
-                g_view.menu_on = false;
+                HandleDetachReply(header);
             }
         } else {
             {

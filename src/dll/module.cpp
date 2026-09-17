@@ -4,10 +4,11 @@
 // (src/native/snowrunner-host/src/dllmain.cpp). What is gone with the host is
 // the protocol: there is no Configure request, because the module scans for
 // itself, and no guard to consult, because the guard the design keeps lives in
-// tools_menu.cpp. The pipe that will let the tray app read the status and send
-// a toggle is a later step; nothing here waits for it.
+// tools_menu.cpp. The pipe server is started from here but owns its own thread;
+// nothing in this file waits on it.
 #include "module.h"
 
+#include "build_identity.h"
 #include "frame_hook.h"
 #include "image.h"
 #include "pipe.h"
@@ -135,6 +136,9 @@ DWORD WINAPI WorkerThread(LPVOID) {
             report = ScanToolsMenu(*image);
         }
     }
+    // Which build this is, for the report. Hashing the executable is disk work,
+    // so it happens here on the worker and never on the game's thread.
+    report.identity = IdentifyFile(MainModulePath());
 
     EnterCriticalSection(&g_status_lock);
     g_status.scan_report = FormatReport(report);
@@ -225,7 +229,7 @@ ToolsMenuStatus RequestSetMenu(bool enable) {
         InterlockedCompareExchange(&g_queue_state, kQueueEmpty, kQueueDone);
     if (existing == kQueuePending || existing == kQueueRunning) {
         LeaveCriticalSection(&g_queue_lock);
-        return ToolsMenuStatus::WorldUnavailable;
+        return ToolsMenuStatus::Busy;
     }
     g_queued_enable = enable;
     g_queued_status = ToolsMenuStatus::NotConfigured;
@@ -234,8 +238,9 @@ ToolsMenuStatus RequestSetMenu(bool enable) {
     InterlockedExchange(&g_queue_state, kQueuePending);
 
     // Two seconds is many frames. If the hook has not drained by then the drain
-    // point is not running, and the command must not be retried off-thread.
-    ToolsMenuStatus status = ToolsMenuStatus::WorldUnavailable;
+    // point is not running, and the command must not be retried off-thread. That
+    // is a stalled hook, not a missing world, and the status line says so.
+    ToolsMenuStatus status = ToolsMenuStatus::HookStalled;
     if (WaitForSingleObject(g_queue_done, 2000) == WAIT_OBJECT_0) {
         status = g_queued_status;
         InterlockedExchange(&g_queue_state, kQueueEmpty);
@@ -256,7 +261,7 @@ void SetHotkey(uint32_t virtual_key) {
     LeaveCriticalSection(&g_status_lock);
 }
 
-bool DetachModule() {
+DetachOutcome DetachModule() {
     SetState(ModuleState::Detaching);
 
     // A menu of ours is taken away through the game's own destroy path, on the
@@ -269,17 +274,25 @@ bool DetachModule() {
     // under a thread that is already on its way into it.
     InterlockedExchange(&g_running, 0);
 
-    bool verified = false;
-    bool quiescent = false;
-    RemoveFrameHook(&verified, &quiescent);
+    DetachOutcome outcome;
+    RemoveFrameHook(&outcome.bytes_verified, &outcome.cold);
+
+    // Three different endings, and the state has to tell them apart. Bytes that
+    // are not provably back mean the game is still patched, which the app must
+    // never render as "the game is untouched"; bytes back but a thread still
+    // inside means detach is not finished, and a second one completes it.
+    ModuleState state = ModuleState::DetachFailed;
+    if (outcome.bytes_verified) {
+        state = outcome.cold ? ModuleState::Detached : ModuleState::Detaching;
+    }
 
     EnterCriticalSection(&g_status_lock);
     g_status.hook_installed = IsFrameHookInstalled();
     g_status.menu_on = ToolsMenuOwned();
-    g_status.state = ModuleState::Detached;
+    g_status.state = state;
     LeaveCriticalSection(&g_status_lock);
 
-    return quiescent;
+    return outcome;
 }
 
 HMODULE ModuleHandle() { return g_self; }

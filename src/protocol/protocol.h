@@ -40,6 +40,65 @@ enum class PipeStatus : uint32_t {
     NotReady = 4,           // the build is unsupported, or the scan is not done
 };
 
+// What the module is doing. On the wire in ResponseHeader::state, so it lives
+// here rather than in module.h: three readers switch on it, and a bare integer
+// in two of them was how the meanings drifted apart before.
+enum class ModuleState : uint32_t {
+    Scanning = 0,      // the worker is still resolving the build
+    Unsupported = 1,   // the scan did not produce a usable layout
+    Failed = 2,        // the scan was usable but the hook or the menu refused
+    Ready = 3,         // hooked, and the toggle works
+    Detaching = 4,     // detach is running, or ran and left the module warm
+    Detached = 5,      // the bytes are verifiably back
+    DetachFailed = 6,  // the bytes are NOT back; the game is still patched
+};
+
+// How the last menu command ended. On the wire in ResponseHeader::last_command.
+enum class ToolsMenuStatus : uint32_t {
+    Ok = 0,
+    NotConfigured = 1,     // no usable layout, so there is nothing to call
+    SiteChanged = 2,       // a binding no longer holds the bytes the scanner saw
+    WorldUnavailable = 3,  // no world loaded, or its pointers are not readable
+    MenuPresent = 4,       // a menu is already up, and this module did not make it
+    MenuForeign = 5,       // asked to remove a menu this module does not own
+    MenuFailed = 6,        // the call returned, but the state it left is wrong
+    Faulted = 7,           // the call itself raised
+    Busy = 8,              // another command is already in flight
+    HookStalled = 9,       // queued, but the game's thread never drained it
+};
+
+// The canonical short phrase for each, for the diagnostics report and for
+// command-line output. The tray app has its own, longer wording: the same
+// facts said to a user rather than to the author.
+inline const char* ToolsMenuStatusText(ToolsMenuStatus status) {
+    switch (status) {
+        case ToolsMenuStatus::Ok: return "ok";
+        case ToolsMenuStatus::NotConfigured: return "not configured";
+        case ToolsMenuStatus::SiteChanged: return "site changed";
+        case ToolsMenuStatus::WorldUnavailable: return "world unavailable";
+        case ToolsMenuStatus::MenuPresent: return "menu already present";
+        case ToolsMenuStatus::MenuForeign: return "menu is not ours";
+        case ToolsMenuStatus::MenuFailed: return "menu call did not take";
+        case ToolsMenuStatus::Faulted: return "call faulted";
+        case ToolsMenuStatus::Busy: return "busy";
+        case ToolsMenuStatus::HookStalled: return "hook not draining";
+    }
+    return "unknown";
+}
+
+inline const char* ModuleStateText(ModuleState state) {
+    switch (state) {
+        case ModuleState::Scanning: return "scanning";
+        case ModuleState::Unsupported: return "unsupported build";
+        case ModuleState::Failed: return "failed";
+        case ModuleState::Ready: return "ready";
+        case ModuleState::Detaching: return "detaching";
+        case ModuleState::Detached: return "detached";
+        case ModuleState::DetachFailed: return "detach failed";
+    }
+    return "unknown";
+}
+
 // Response flags.
 constexpr uint32_t kFlagHookInstalled = 1u << 0;
 constexpr uint32_t kFlagMenuOn = 1u << 1;
