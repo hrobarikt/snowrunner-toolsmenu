@@ -73,9 +73,10 @@ jobs:
             inside the app. Start SnowRunner however you normally do, load a
             save, and press HOME.
 
-            Windows and your antivirus will not recognise this binary. It is
-            built from this tag by the workflow in `.github/workflows`, never
-            by hand, so the hash below is the one thing worth checking:
+            SmartScreen or your antivirus may flag this binary as a false
+            positive. It is built from this tag by the workflow in
+            `.github/workflows`, never by hand, so the hash below is the one
+            thing worth checking:
 
             ```
             ${{ env.SHA256 }}  srtm-toolsmenu.exe
