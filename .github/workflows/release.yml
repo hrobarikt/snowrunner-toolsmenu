@@ -80,5 +80,3 @@ jobs:
             ```
             ${{ env.SHA256 }}  srtm-toolsmenu.exe
             ```
-
-            Single-player only. See the README for what that means and why.
