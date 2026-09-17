@@ -1,7 +1,9 @@
 # Builds a release binary from a tag and publishes it with its SHA-256.
 #
 # A binary traceable to a public commit is what stands in for a code-signing
-# certificate here, so releases are never built by hand.
+# certificate here, so releases are never built by hand. Windows will still warn
+# about an unsigned executable; the answer offered to a user is the hash and the
+# source, not a certificate.
 name: release
 
 on:
@@ -24,24 +26,59 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
-      # No shippable binary exists yet; once the exe target lands this step
-      # collects it, writes its SHA-256 and attaches both to the release.
+      # The app carries the module inside it as a resource. If that ever breaks,
+      # the exe still builds and still runs -- and does nothing at all in the
+      # game -- so the size is checked here rather than discovered by a user.
+      - name: Check the module is embedded
+        run: |
+          $exe = 'build\src\app\Release\srtm-toolsmenu.exe'
+          $dll = 'build\src\dll\Release\srtm.dll'
+          foreach ($path in @($exe, $dll)) {
+            if (-not (Test-Path $path)) { throw "Missing $path" }
+          }
+          $exeSize = (Get-Item $exe).Length
+          $dllSize = (Get-Item $dll).Length
+          Write-Host "app $exeSize bytes, module $dllSize bytes"
+          if ($exeSize -lt $dllSize) {
+            throw 'The app is smaller than the module, so the module is not embedded.'
+          }
+
+      # Only the tray app ships. srtm-scan and srtm-inject are development
+      # tools: they stay in the repository and out of the release.
       - name: Collect artifacts
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          $binaries = Get-ChildItem -Recurse build -Include *.exe -File
-          if (-not $binaries) {
-            Write-Host 'No executable target yet; nothing to publish.'
-            exit 0
-          }
-          foreach ($binary in $binaries) {
-            Copy-Item $binary.FullName artifacts
-            (Get-FileHash $binary.FullName -Algorithm SHA256).Hash |
-              Out-File "artifacts\$($binary.Name).sha256" -Encoding utf8
-          }
+          $exe = 'build\src\app\Release\srtm-toolsmenu.exe'
+          Copy-Item $exe artifacts
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          $hash | Out-File 'artifacts\srtm-toolsmenu.exe.sha256' -Encoding ascii
+          Write-Host "SHA-256 $hash"
+          "SHA256=$hash" | Out-File -Append $env:GITHUB_ENV -Encoding ascii
+
+      # So a dispatch run is worth something on its own, not only a tag.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: srtm-toolsmenu
+          path: artifacts/*
 
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          generate_release_notes: true
+          body: |
+            Download `srtm-toolsmenu.exe` and run it. There is nothing to
+            install and nothing to put in the game folder; the module travels
+            inside the app. Start SnowRunner however you normally do, load a
+            save, and press HOME.
+
+            Windows and your antivirus will not recognise this binary. It is
+            built from this tag by the workflow in `.github/workflows`, never
+            by hand, so the hash below is the one thing worth checking:
+
+            ```
+            ${{ env.SHA256 }}  srtm-toolsmenu.exe
+            ```
+
+            Single-player only. See the README for what that means and why.
