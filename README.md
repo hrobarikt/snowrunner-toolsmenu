@@ -72,9 +72,13 @@ part of a release: `srtm-scan.exe`, which prints the signature report for a
 running game or a file, and `srtm-inject.exe`, which loads and drives the module
 from a command line.
 
+## Support
+
+If it is useful to you, a donation is welcome but never required.
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/hrobarikt)
+
 ## Licence
 
 GPL-3.0. Use it, fork it, improve it. It may not be folded into a closed-source
 or paid product.
-
-If it is useful to you, a donation is welcome but never required.
