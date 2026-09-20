@@ -38,7 +38,12 @@ ID3D11DeviceContext* g_context = nullptr;
 IDXGISwapChain* g_swap_chain = nullptr;
 ID3D11RenderTargetView* g_render_target = nullptr;
 NOTIFYICONDATAW g_tray = {};
-bool g_window_visible = true;
+// False until something shows the window, which ShowWindowAgain is now the
+// only way to do: the flag and the device are made true together or not at all.
+bool g_window_visible = false;
+// Whether the ImGui DX11 backend has been handed a device. It has not until
+// the window is first shown, and shutdown must not undo what was never done.
+bool g_dx11_ready = false;
 
 // The keys worth offering. A free-text virtual-key code would be a worse
 // question to ask a user than a short list of keys nothing else in the game
@@ -110,7 +115,36 @@ void CleanupDeviceD3D() {
     if (g_device != nullptr) { g_device->Release(); g_device = nullptr; }
 }
 
+// The device is the one thing a hidden app has no use for: nothing draws until
+// the window is shown, and an app that starts with Windows may never be shown
+// at all. Asking for a GPU at login is also the worst moment to ask -- the
+// driver is not necessarily up yet -- so the device, and the ImGui backend that
+// owns it, wait for the first show.
+bool EnsureDeviceD3D(HWND window) {
+    if (g_device != nullptr) {
+        return true;
+    }
+    if (!CreateDeviceD3D(window)) {
+        // Partial work is still work: the swap chain can exist where the device
+        // does not, and the next attempt starts from nothing.
+        CleanupDeviceD3D();
+        return false;
+    }
+    ImGui_ImplDX11_Init(g_device, g_context);
+    g_dx11_ready = true;
+    return true;
+}
+
 void ShowWindowAgain(HWND window) {
+    if (!EnsureDeviceD3D(window)) {
+        // No window, but the app is not the window: the tray icon, the hotkey
+        // and the module already in the game all keep working without one.
+        MessageBoxW(window,
+                    L"The window could not be opened: Direct3D was not "
+                    L"available. The tray icon and the hotkey still work.",
+                    kWindowTitle, MB_ICONERROR);
+        return;
+    }
     g_window_visible = true;
     ShowWindow(window, SW_SHOW);
     SetForegroundWindow(window);
@@ -423,8 +457,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         0, window_class.lpszClassName, kWindowTitle,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT,
         CW_USEDEFAULT, 560, 460, nullptr, nullptr, instance, nullptr);
-    if (window == nullptr || !CreateDeviceD3D(window)) {
-        CleanupDeviceD3D();
+    if (window == nullptr) {
         UnregisterClassW(window_class.lpszClassName, instance);
         MessageBoxW(nullptr, L"Could not create the window.", kWindowTitle, MB_ICONERROR);
         return 1;
@@ -439,9 +472,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     wcscpy_s(g_tray.szTip, kWindowTitle);
     Shell_NotifyIconW(NIM_ADD, &g_tray);
 
-    ShowWindow(window, SW_SHOWDEFAULT);
-    UpdateWindow(window);
-
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -451,7 +481,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     io.IniFilename = nullptr;
     ImGui::StyleColorsDark();
     ImGui_ImplWin32_Init(window);
-    ImGui_ImplDX11_Init(g_device, g_context);
+
+    // The first show is the one that builds the device, through the same path
+    // the tray icon uses later.
+    ShowWindowAgain(window);
 
     wchar_t dll_path[MAX_PATH] = {};
     GetTempPathW(MAX_PATH, dll_path);
@@ -471,7 +504,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         if (done) {
             break;
         }
-        if (!g_window_visible) {
+        if (!g_window_visible || g_device == nullptr) {
             // Hidden in the tray, the app is only waiting for the worker and
             // for the user. Drawing would be wasted, so it does not.
             Sleep(100);
@@ -495,7 +528,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     // module unloads itself, exactly as the Detach button does.
     srtm::DetachAndWait(3000);
     srtm::StopLink();
-    ImGui_ImplDX11_Shutdown();
+    if (g_dx11_ready) {
+        ImGui_ImplDX11_Shutdown();
+    }
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
     Shell_NotifyIconW(NIM_DELETE, &g_tray);
