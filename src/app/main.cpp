@@ -4,6 +4,7 @@
 // way. The common action -- toggling the menu -- is the hotkey, in the game,
 // with no alt-tab; the window exists to say what is happening when that does
 // not work. Closing the window hides it, and only Exit ends the app.
+#include "autostart.h"
 #include "link.h"
 // For ModuleState and ToolsMenuStatus: the window puts words to what the module
 // reports, and the names come from the wire rather than from a local copy.
@@ -21,7 +22,6 @@
 #include <shellapi.h>
 
 #include <string>
-#include <vector>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -38,6 +38,11 @@ constexpr wchar_t kWindowTitle[] = L"SnowRunner Tools Menu";
 // crosses processes and only a registered message is guaranteed not to mean
 // something else in whatever other window the broadcast reaches.
 UINT g_show_message = 0;
+
+// Autostart's own complaint, kept here rather than pushed into LinkView: the
+// worker clears that one whenever an attach succeeds, which would wipe this
+// within a poll of it being shown.
+std::wstring g_autostart_trouble;
 
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
@@ -293,6 +298,21 @@ const char* CommandText(uint32_t status) {
     return "unknown";
 }
 
+// ImGui speaks UTF-8; everything the app gets from Windows is wide.
+std::string Utf8(const std::wstring& text) {
+    if (text.empty()) {
+        return std::string();
+    }
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                           static_cast<int>(text.size()), nullptr, 0,
+                                           nullptr, nullptr);
+    std::string utf8;
+    utf8.resize(length > 0 ? static_cast<size_t>(length) : 0);
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                        utf8.data(), length, nullptr, nullptr);
+    return utf8;
+}
+
 void CopyToClipboard(HWND window, const std::string& text) {
     if (!OpenClipboard(window)) {
         return;
@@ -351,13 +371,8 @@ void DrawWindow(HWND window) {
 
     ImGui::TextWrapped("%s", StatusLine(view).c_str());
     if (!view.trouble.empty()) {
-        const std::wstring& trouble = view.trouble;
-        const int length = WideCharToMultiByte(CP_UTF8, 0, trouble.c_str(), -1, nullptr,
-                                               0, nullptr, nullptr);
-        std::vector<char> utf8(length > 0 ? length : 1, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, trouble.c_str(), -1, utf8.data(), length,
-                            nullptr, nullptr);
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", utf8.data());
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s",
+                           Utf8(view.trouble).c_str());
     }
 
     ImGui::Separator();
@@ -411,6 +426,22 @@ void DrawWindow(HWND window) {
     ImGui::SameLine();
     ImGui::TextDisabled("(only while the game window has focus)");
 
+    // Read from the registry every frame rather than cached: the user can
+    // change this from Task Manager's Startup tab while the window is open, and
+    // a checkbox that disagreed with Windows would be a checkbox that lies.
+    bool autostart = srtm::AutostartEnabled();
+    if (ImGui::Checkbox("Start with Windows", &autostart)) {
+        // On refusal the box comes back by itself next frame: the registry is
+        // what draws it, so there is no local state to put back.
+        srtm::SetAutostart(autostart, &g_autostart_trouble);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(starts in the tray)");
+    if (!g_autostart_trouble.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s",
+                           Utf8(g_autostart_trouble).c_str());
+    }
+
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Diagnostics")) {
         ImGui::Text("Game process: %s", view.game_running ? "running" : "not running");
@@ -443,18 +474,32 @@ void DrawWindow(HWND window) {
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int) {
+    // The one argument the app takes, and the one Windows passes at logon.
+    // Anything else is ignored: there is no console to complain into, and a
+    // message box about a stray argument would be worse than silence.
+    const bool start_in_tray =
+        command_line != nullptr && wcsstr(command_line, L"--tray") != nullptr;
+
     // Registered before anything can receive it, and the same string in every
     // copy of the app, which is what makes the handoff below find its target.
     g_show_message = RegisterWindowMessageW(L"SnowRunnerToolsMenuShow");
+
+    // Before the single-instance check, not after it. The copy that knows the
+    // exe has moved is the one that was just run, and with autostart on there
+    // is almost always an older copy already in the tray -- so a refresh that
+    // waited until after the check would be skipped in precisely the case it
+    // exists for.
+    srtm::RefreshAutostartPath();
 
     // One instance: two of these would fight over the same game.
     const HANDLE only = CreateMutexW(nullptr, TRUE, L"snowrunner-toolsmenu-single");
     if (only != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
         // Exiting in silence would look exactly like a broken download. Ask the
         // copy that is already running to show itself instead, and let that be
-        // what the user sees for their click.
-        if (g_show_message != 0) {
+        // what the user sees for their click -- unless this copy was started by
+        // Windows at logon, which is nobody clicking anything.
+        if (g_show_message != 0 && !start_in_tray) {
             PostMessageW(HWND_BROADCAST, g_show_message, 0, 0);
         }
         return 0;
@@ -507,8 +552,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     ImGui_ImplWin32_Init(window);
 
     // The first show is the one that builds the device, through the same path
-    // the tray icon uses later.
-    ShowWindowAgain(window);
+    // the tray icon uses later -- and at logon there is no first show at all.
+    if (!start_in_tray) {
+        ShowWindowAgain(window);
+    }
 
     wchar_t dll_path[MAX_PATH] = {};
     GetTempPathW(MAX_PATH, dll_path);

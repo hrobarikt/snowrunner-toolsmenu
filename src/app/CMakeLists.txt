@@ -17,6 +17,7 @@ file(GENERATE OUTPUT "${module_rc}"
      CONTENT "#include \"resource.h\"\nIDR_SRTM_DLL RCDATA \"$<TARGET_FILE:srtm_dll>\"\n${icon_line}")
 
 add_executable(srtm-toolsmenu WIN32
+    autostart.cpp
     main.cpp
     link.cpp
     "${module_rc}"

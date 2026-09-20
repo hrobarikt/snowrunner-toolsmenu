@@ -124,6 +124,24 @@ the trust story that stands in for a code-signing certificate. The binary is
 never packed or obfuscated -- packers are themselves a detection trigger, and
 looking less like an injector is not a goal.
 
+Starting with Windows is optional, off by default, and one string value under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` holding the exe's own path
+and `--tray`. Not a scheduled task: the only thing a task buys is running
+elevated without a prompt, the injector does not need elevation, and a
+logon-time scheduled task is a far stronger malware signal than a Run key on a
+tool that already has an antivirus problem. Not a Startup-folder shortcut
+either, which is a file to lose track of. The Run value is not the whole truth,
+though: disabling an entry in Task Manager's Startup tab leaves the value in
+place and records the disable in `StartupApproved` next to it, so both are read
+and the user's choice there is never overwritten behind their back. The exe is
+portable, so the stored path is corrected whenever a moved copy is run -- which
+cannot help a copy that is moved and never opened again.
+
+With that option comes a tray app that may be running all day and never looked
+at, so the Direct3D device is built on the first show rather than at startup: a
+hidden app holds no device, and nothing asks the GPU for anything at logon,
+when the driver may not be up yet.
+
 ## Known caveats
 
 - **Microsoft Store / Game Pass is best-effort, not promised.** It runs in an

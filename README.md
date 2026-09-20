@@ -25,6 +25,12 @@ and closing it from the tray puts the game back exactly as it was found: the
 menu off, the hook removed, the original bytes checked back into place and the
 module unloaded, with the game still running.
 
+Step 2 can happen by itself. Tick **Start with Windows** in the tool's window
+and it will be in the tray after every reboot, waiting for the game. It starts
+hidden, does nothing at all until SnowRunner appears, and the same checkbox
+turns it back off -- as does switching the entry off in Task Manager's Startup
+tab, which the checkbox follows rather than fights. It is off by default.
+
 One caveat: if the tool is force-killed from Task Manager it never gets the
 chance to clean up, so its module stays in the game until the game is closed.
 Nothing can be done about that from inside a process that has been killed.
