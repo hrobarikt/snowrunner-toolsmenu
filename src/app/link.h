@@ -51,6 +51,10 @@ LinkView GetLinkView();
 void RequestMenu(bool on);
 void RequestHotkey(uint32_t virtual_key);
 
+// Asks the module to look for the build again. Only worth offering when the
+// module has finished scanning without a hook; the module ignores it otherwise.
+void RequestRescan();
+
 // Asks the module to leave and waits for it to go, up to `timeout_ms`. Exiting
 // the app restores the game, so this is what Exit does before shutting down.
 // A kill cannot honour it, which is why a forced end leaves the module loaded

@@ -2,9 +2,12 @@
 //
 // On load it does nothing but start a worker thread. That thread scans the
 // loaded game image, and only if every signature resolves and agrees does it
-// configure the menu and install the frame hook. An unrecognised build leaves
-// the module loaded, inert and able to explain itself: nothing is patched and
-// nothing is called. See docs/design.md, "Architecture".
+// configure the menu and install the frame hook. It keeps scanning while the
+// build does not resolve, because a game that is still starting up cannot be
+// read yet and the module may well have arrived before it was ready. An
+// unrecognised build leaves the module loaded, inert and able to explain
+// itself: nothing is patched and nothing is called. See docs/design.md,
+// "Architecture".
 //
 // Two threads matter. The game's own thread reaches this module through the
 // frame hook's drain point, and that is the only thread a command ever runs
@@ -51,6 +54,16 @@ ToolsMenuStatus RequestSetMenu(bool enable);
 
 // Which key toggles the menu. Takes effect on the next frame.
 void SetHotkey(uint32_t virtual_key);
+
+// Look for the build again. Only does anything when the scan has finished
+// without a hook -- an unrecognised build, or one that refused the hook -- and
+// it is what the app's Try again offers: a user who was on a load screen for
+// longer than the scan's deadline has no other way back.
+void RequestRescan();
+
+// Tells the scan loop to leave without waiting for it. For DllMain only, where
+// waiting would deadlock the loader lock.
+void StopModuleScan();
 
 // What a detach actually achieved. Two separate answers, because the bytes can
 // be provably back while a thread is still on its way out, and because a failed

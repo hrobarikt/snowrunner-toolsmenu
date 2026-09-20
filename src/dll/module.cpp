@@ -14,11 +14,37 @@
 #include "pipe.h"
 #include "tools_menu_scan.h"
 
+#include <cstdio>
+
 namespace srtm {
 namespace {
 
 HMODULE g_self = nullptr;
 HANDLE g_worker = nullptr;
+
+// A scan that runs the instant the module lands reads a game that cannot be
+// read yet. SnowRunner is SteamStub-wrapped, so its code only exists decrypted
+// in memory once startup has decrypted it, and the frame-dispatch slot the scan
+// validates is written later still. One attempt meant the module declared a
+// perfectly supported build unrecognised whenever the app got in first, which
+// is why the scan is a loop.
+constexpr DWORD kScanIntervalMs = 1000;
+
+// Measured on 2026-09-20, Steam build 1.886173.SNOW_DLC_18: with the tray
+// waiting for the game's window before injecting, the first scan resolved
+// 0.2s after the module loaded. Thirty seconds is that with a hundredfold
+// margin, and the margin is what this constant is for -- a machine slower than
+// the one it was measured on, or a startup that does not order itself as
+// tidily. The deadline is only here so that a build which genuinely does not
+// match reaches a verdict instead of spinning forever, and Try again restarts
+// it; sizing it much larger only means staring longer at "reading" before
+// being told the truth.
+constexpr ULONGLONG kScanDeadlineMs = 30 * 1000;
+
+// Manual-reset: the module is leaving, and the scan loop must be gone before
+// anything unloads it. Auto-reset: the user asked for another look.
+HANDLE g_scan_stop = nullptr;
+HANDLE g_scan_again = nullptr;
 
 CRITICAL_SECTION g_status_lock;
 ModuleStatus g_status;
@@ -123,53 +149,142 @@ void DrainQueuedCommand() {
     SetEvent(g_queue_done);
 }
 
+// How the scan is going, in the report and nowhere else. The number that
+// matters is how long after the module loaded the scan first resolved: it is
+// the only evidence that says whether the deadline above is the right size,
+// and it can only be measured on a real machine loading a real game.
+void PublishReport(const ScanReport& report, unsigned attempt, ULONGLONG started,
+                   bool still_looking) {
+    const ULONGLONG elapsed = GetTickCount64() - started;
+    const unsigned seconds = static_cast<unsigned>(elapsed / 1000);
+    const unsigned tenths = static_cast<unsigned>((elapsed % 1000) / 100);
+
+    char line[200] = {};
+    if (report.usable) {
+        _snprintf_s(line, _TRUNCATE,
+                    "\n  scan    resolved %u.%us after the module loaded, on attempt %u\n",
+                    seconds, tenths, attempt);
+    } else if (still_looking) {
+        _snprintf_s(line, _TRUNCATE,
+                    "\n  scan    still looking: %u.%us in, %u attempts. The game may "
+                    "still be starting up.\n",
+                    seconds, tenths, attempt);
+    } else {
+        _snprintf_s(line, _TRUNCATE,
+                    "\n  scan    gave up after %u.%us and %u attempts\n",
+                    seconds, tenths, attempt);
+    }
+
+    std::string text = FormatReport(report);
+    text += line;
+
+    EnterCriticalSection(&g_status_lock);
+    g_status.scan_report = text;
+    LeaveCriticalSection(&g_status_lock);
+}
+
+// Asks the scan loop to leave and waits for it. False means it is still in
+// there, which makes the module not cold no matter what the hook says: a loop
+// waiting between passes has its instruction pointer outside this module, so
+// quiescence cannot see it, and an unload would unmap the code it is about to
+// return into.
+void CloseScanEvents() {
+    if (g_scan_stop != nullptr) {
+        CloseHandle(g_scan_stop);
+        g_scan_stop = nullptr;
+    }
+    if (g_scan_again != nullptr) {
+        CloseHandle(g_scan_again);
+        g_scan_again = nullptr;
+    }
+}
+
+bool StopScanWorker(DWORD timeout_ms) {
+    if (g_scan_stop != nullptr) {
+        SetEvent(g_scan_stop);
+    }
+    if (g_worker == nullptr) {
+        return true;
+    }
+    if (WaitForSingleObject(g_worker, timeout_ms) != WAIT_OBJECT_0) {
+        return false;
+    }
+    CloseHandle(g_worker);
+    g_worker = nullptr;
+    return true;
+}
+
 DWORD WINAPI WorkerThread(LPVOID) {
     uint32_t module_size = 0;
     const uint8_t* module_base = MainModuleBase(&module_size);
+    // Which build this is, for the report. Hashing the executable is disk work
+    // and the answer cannot change while the process is alive, so it happens
+    // once here rather than on every pass of the loop below.
+    const BuildIdentity identity = IdentifyFile(MainModulePath());
+    const ULONGLONG started = GetTickCount64();
 
-    ScanReport report;
-    if (module_base != nullptr) {
-        const std::optional<Image> image =
-            Image::Parse(module_base, module_size,
-                         reinterpret_cast<uint64_t>(module_base), /*live=*/true);
-        if (image.has_value()) {
-            report = ScanToolsMenu(*image);
+    for (;;) {
+        SetState(ModuleState::Scanning);
+        const ULONGLONG deadline = GetTickCount64() + kScanDeadlineMs;
+        ScanReport report;
+        unsigned attempt = 0;
+
+        for (;;) {
+            ++attempt;
+            report = ScanReport{};
+            if (module_base != nullptr) {
+                const std::optional<Image> image =
+                    Image::Parse(module_base, module_size,
+                                 reinterpret_cast<uint64_t>(module_base), /*live=*/true);
+                if (image.has_value()) {
+                    report = ScanToolsMenu(*image);
+                }
+            }
+            report.identity = identity;
+
+            const bool out_of_time = GetTickCount64() >= deadline;
+            PublishReport(report, attempt, started, !report.usable && !out_of_time);
+            if (report.usable || out_of_time) {
+                break;
+            }
+            if (WaitForSingleObject(g_scan_stop, kScanIntervalMs) == WAIT_OBJECT_0) {
+                return 0;
+            }
+        }
+
+        if (report.usable) {
+            if (!ConfigureToolsMenu(report.layout, module_base, module_size)) {
+                SetState(ModuleState::Failed);
+            } else {
+                void* target =
+                    const_cast<uint8_t*>(module_base) + report.layout.frame_tick_rva;
+                if (!InstallFrameHook(target, report.layout.frame_tick_steal_bytes,
+                                      report.layout.frame_tick_sample,
+                                      report.layout.frame_tick_sample_length)) {
+                    SetState(ModuleState::Failed);
+                } else {
+                    InterlockedExchange(&g_running, 1);
+                    EnterCriticalSection(&g_status_lock);
+                    g_status.hook_installed = true;
+                    g_status.state = ModuleState::Ready;
+                    LeaveCriticalSection(&g_status_lock);
+                    return 0;
+                }
+            }
+        } else {
+            // Nothing is patched and nothing is called. The module stays loaded
+            // so that the report can still be read out of it.
+            SetState(ModuleState::Unsupported);
+        }
+
+        // Neither ending is worth a thread spinning, but both are worth being
+        // able to take back: the user may have been sitting on a load screen
+        // longer than the deadline. Try again lands here.
+        const HANDLE waits[] = {g_scan_stop, g_scan_again};
+        if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) {
+            return 0;
         }
     }
-    // Which build this is, for the report. Hashing the executable is disk work,
-    // so it happens here on the worker and never on the game's thread.
-    report.identity = IdentifyFile(MainModulePath());
-
-    EnterCriticalSection(&g_status_lock);
-    g_status.scan_report = FormatReport(report);
-    LeaveCriticalSection(&g_status_lock);
-
-    if (!report.usable) {
-        // Nothing is patched and nothing is called. The module stays loaded so
-        // that the report can still be read out of it.
-        SetState(ModuleState::Unsupported);
-        return 0;
-    }
-
-    if (!ConfigureToolsMenu(report.layout, module_base, module_size)) {
-        SetState(ModuleState::Failed);
-        return 0;
-    }
-
-    void* target = const_cast<uint8_t*>(module_base) + report.layout.frame_tick_rva;
-    if (!InstallFrameHook(target, report.layout.frame_tick_steal_bytes,
-                          report.layout.frame_tick_sample,
-                          report.layout.frame_tick_sample_length)) {
-        SetState(ModuleState::Failed);
-        return 0;
-    }
-
-    InterlockedExchange(&g_running, 1);
-    EnterCriticalSection(&g_status_lock);
-    g_status.hook_installed = true;
-    g_status.state = ModuleState::Ready;
-    LeaveCriticalSection(&g_status_lock);
-    return 0;
 }
 
 }  // namespace
@@ -191,7 +306,14 @@ bool StartModule(HMODULE self) {
     InitializeCriticalSection(&g_status_lock);
     InitializeCriticalSection(&g_queue_lock);
     g_queue_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (g_queue_done == nullptr) {
+    g_scan_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_scan_again = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (g_queue_done == nullptr || g_scan_stop == nullptr || g_scan_again == nullptr) {
+        CloseScanEvents();
+        if (g_queue_done != nullptr) {
+            CloseHandle(g_queue_done);
+            g_queue_done = nullptr;
+        }
         DeleteCriticalSection(&g_queue_lock);
         DeleteCriticalSection(&g_status_lock);
         return false;
@@ -203,6 +325,7 @@ bool StartModule(HMODULE self) {
 
     g_worker = CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
     if (g_worker == nullptr) {
+        CloseScanEvents();
         CloseHandle(g_queue_done);
         g_queue_done = nullptr;
         DeleteCriticalSection(&g_queue_lock);
@@ -262,6 +385,11 @@ void SetHotkey(uint32_t virtual_key) {
 }
 
 DetachOutcome DetachModule() {
+    // First, because the scan loop may be one pass away from installing the
+    // hook this is about to remove, and because a loop waiting between passes
+    // is invisible to the quiescence check below.
+    const bool scan_worker_gone = StopScanWorker(2000);
+
     SetState(ModuleState::Detaching);
 
     // A menu of ours is taken away through the game's own destroy path, on the
@@ -276,6 +404,11 @@ DetachOutcome DetachModule() {
 
     DetachOutcome outcome;
     RemoveFrameHook(&outcome.bytes_verified, &outcome.cold);
+
+    // A scan loop that would not leave is a thread that can still execute this
+    // module's code, whatever the hook says. Cold has to mean nobody is in
+    // here, so it is the whole answer that gives way, not part of it.
+    outcome.cold = outcome.cold && scan_worker_gone;
 
     // Three different endings, and the state has to tell them apart. Bytes that
     // are not provably back mean the game is still patched, which the app must
@@ -293,6 +426,21 @@ DetachOutcome DetachModule() {
     LeaveCriticalSection(&g_status_lock);
 
     return outcome;
+}
+
+void RequestRescan() {
+    if (g_scan_again != nullptr) {
+        SetEvent(g_scan_again);
+    }
+}
+
+void StopModuleScan() {
+    // No wait: the only caller is DllMain on an unload nobody asked for, and
+    // waiting under the loader lock is what deadlocks it. Signalling still
+    // shortens the window in which the loop is running during a teardown.
+    if (g_scan_stop != nullptr) {
+        SetEvent(g_scan_stop);
+    }
 }
 
 HMODULE ModuleHandle() { return g_self; }

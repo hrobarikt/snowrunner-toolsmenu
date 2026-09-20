@@ -11,6 +11,28 @@
 namespace srtm {
 namespace {
 
+struct WindowSearch {
+    DWORD pid = 0;
+    bool found = false;
+};
+
+BOOL CALLBACK VisibleWindowOfProcess(HWND window, LPARAM parameter) {
+    auto* search = reinterpret_cast<WindowSearch*>(parameter);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(window, &pid);
+    if (pid != search->pid || !IsWindowVisible(window)) {
+        return TRUE;
+    }
+    // EnumWindows already walks top-level windows only, but an owned window --
+    // a dialog, a tooltip -- is one too, and it is the game's own frame that
+    // says the process is up.
+    if (GetWindow(window, GW_OWNER) != nullptr) {
+        return TRUE;
+    }
+    search->found = true;
+    return FALSE;
+}
+
 std::wstring FormatError(const wchar_t* what, DWORD error) {
     wchar_t buffer[256] = {};
     _snwprintf_s(buffer, _TRUNCATE, L"%s (Windows error %lu).", what, error);
@@ -37,6 +59,16 @@ DWORD FindGameProcess() {
     }
     CloseHandle(snapshot);
     return pid;
+}
+
+bool GameHasWindow(DWORD pid) {
+    if (pid == 0) {
+        return false;
+    }
+    WindowSearch search;
+    search.pid = pid;
+    EnumWindows(VisibleWindowOfProcess, reinterpret_cast<LPARAM>(&search));
+    return search.found;
 }
 
 bool IsModuleLoaded(DWORD pid, const std::wstring& dll_path) {

@@ -85,6 +85,10 @@ ResponseHeader Handle(const Request& request, std::string* report, bool* unload)
             SetHotkey(request.argument);
             return StatusHeader(report);
 
+        case Opcode::Rescan:
+            RequestRescan();
+            return StatusHeader(report);
+
         case Opcode::Detach: {
             // Detach runs here, before the reply, so the reply can say what it
             // actually achieved rather than what it was about to attempt. Only

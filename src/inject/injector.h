@@ -27,6 +27,13 @@ DWORD FindGameProcess();
 
 bool IsModuleLoaded(DWORD pid, const std::wstring& dll_path);
 
+// True once `pid` owns a visible top-level window. A process appears in the
+// process list before Windows has finished setting it up, and injecting into
+// one that has not reached its message loop is the fragile moment; a window --
+// even a splash -- means that moment has passed. Deliberately not matched by
+// title: a localised or renamed build is still the game.
+bool GameHasWindow(DWORD pid);
+
 // Loads `dll_path` into `pid` and waits for its entry point to return.
 // `detail` gets a sentence fit to show a user; it is set on failure only.
 InjectResult InjectLibrary(DWORD pid, const std::wstring& dll_path, std::wstring* detail);

@@ -17,7 +17,10 @@ reads, so it comes with the menu rather than as its own toggle.
 
 - **Tray-resident injector exe.** It waits for `SnowRunner.exe`, injects, and
   stays in the tray. Attach-only: the user launches the game normally through
-  Steam, Epic or Xbox, and start order does not matter.
+  Steam, Epic or Xbox, and start order does not matter. Making that last part
+  true takes work, because a game that has only just started cannot be read
+  yet: the tray waits for the game to own a visible window before injecting,
+  and the module keeps scanning after that. See "Architecture".
 - **A configurable global hotkey** (default `HOME`) toggles the menu in-game,
   so the common action needs no alt-tab. The choice is remembered between runs,
   in `HKCU\Software\snowrunner-toolsmenu`: a keybinding is not the kind of
@@ -44,7 +47,19 @@ hotkey covers it without a `Present` hook, an in-game render backend, or a
 
 **The DLL is the whole brain.** It scans its own module for the signatures,
 validates them, installs the frame hook, owns menu state, polls the hotkey from
-the frame hook, and detaches cleanly. This is the deliberate inverse of the
+the frame hook, and detaches cleanly.
+
+**The scan is a loop, not an attempt.** SnowRunner is SteamStub-wrapped, so its
+code only exists decrypted once startup has decrypted it, and the frame-dispatch
+slot the scan validates is written later still. A single scan run the instant
+the module lands sees neither, and reports a supported build as unrecognised for
+the rest of the session -- which is exactly what starting the tray before the
+game used to do. So the module rescans once a second while the build does not
+resolve, for thirty seconds, and only then calls it unrecognised. The report
+carries how long the scan took to resolve: on the build this was measured on,
+with the window gate in place, the first scan resolved 0.2s after the module
+loaded and the loop never ran a second pass. It is insurance, not the
+mechanism. This is the deliberate inverse of the
 predecessor project, where the DLL resolved nothing and a PowerShell harness
 handed it every address.
 

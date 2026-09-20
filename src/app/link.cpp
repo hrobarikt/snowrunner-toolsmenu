@@ -27,6 +27,7 @@ std::atomic<bool> g_stop{false};
 // person can click, and each is answered before the next poll.
 std::atomic<bool> g_want_detach{false};
 std::atomic<int> g_want_menu{-1};        // -1 none, 0 off, 1 on
+std::atomic<bool> g_want_rescan{false};
 
 // The hotkey the user chose, which is a wish rather than a command: the worker
 // pushes it whenever the module disagrees, so it survives a re-attach and a
@@ -237,6 +238,7 @@ void WorkerLoop() {
             }
             g_want_detach.store(false);
             g_want_menu.store(-1);
+            g_want_rescan.store(false);
             Sleep(500);
             continue;
         }
@@ -253,6 +255,7 @@ void WorkerLoop() {
 
         const int menu = g_want_menu.exchange(-1);
         const bool detach = g_want_detach.exchange(false);
+        const bool rescan = g_want_rescan.exchange(false);
 
         // Pushed whenever the module's idea of the hotkey is not the user's.
         // The module always starts on its own default, so this is also what
@@ -279,6 +282,8 @@ void WorkerLoop() {
                 g_view.busy = true;
             }
             answered = Exchange(pid, Opcode::SetMenu, menu != 0 ? 1u : 0u, &header, &report);
+        } else if (rescan) {
+            answered = Exchange(pid, Opcode::Rescan, 0, &header, &report);
         } else if (hotkey != 0) {
             answered = Exchange(pid, Opcode::SetHotkey, hotkey, &header, &report);
         } else {
@@ -305,7 +310,11 @@ void WorkerLoop() {
             // Nothing is listening. Unless this app is on its way out, that is
             // a game that has just appeared, and attaching to it is the whole
             // job of the tray.
-            if (!g_detached.load()) {
+            // ...once the game has a window. A process is in the process list
+            // before Windows has finished setting it up, and that is the worst
+            // moment to be starting a thread in it. The module's own scan loop
+            // handles everything that is still not ready after that.
+            if (!g_detached.load() && GameHasWindow(pid)) {
                 Attach(pid);
             }
         }
@@ -337,6 +346,7 @@ LinkView GetLinkView() {
 }
 
 void RequestMenu(bool on) { g_want_menu.store(on ? 1 : 0); }
+void RequestRescan() { g_want_rescan.store(true); }
 void RequestHotkey(uint32_t virtual_key) {
     g_desired_hotkey.store(virtual_key);
     SaveHotkey(virtual_key);

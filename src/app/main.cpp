@@ -326,6 +326,20 @@ void DrawWindow(HWND window) {
     }
     ImGui::EndDisabled();
 
+    // Only when the module has stopped looking. Its scan keeps retrying for
+    // three minutes, which outlasts any load; past that, a game that sat on a
+    // load screen longer than that has no other way back, and neither does a
+    // build the scan cannot make sense of yet.
+    const auto state = static_cast<srtm::ModuleState>(view.state);
+    if (view.module_present && (state == srtm::ModuleState::Unsupported ||
+                                state == srtm::ModuleState::Failed)) {
+        ImGui::Spacing();
+        if (ImGui::Button("Try again", ImVec2(-1, 0))) {
+            srtm::RequestRescan();
+        }
+        ImGui::TextDisabled("Looks again, in case the game was still loading.");
+    }
+
     ImGui::Spacing();
     ImGui::Text("Hotkey");
     ImGui::SameLine();

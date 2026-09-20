@@ -18,7 +18,11 @@
 namespace srtm {
 
 constexpr uint32_t kProtocolMagic = 0x4D545253;  // 'SRTM'
-constexpr uint32_t kProtocolVersion = 1;
+// 2 adds Opcode::Rescan. Bumped rather than added silently, because a module
+// from an older build can still be loaded in a game that has been running
+// since before an update, and a stale pair should say so rather than treat an
+// unknown opcode as a refusal.
+constexpr uint32_t kProtocolVersion = 2;
 
 // The largest diagnostics payload a response may carry. The report is a few
 // hundred bytes; this only exists so a reader can refuse a nonsense length
@@ -30,6 +34,7 @@ enum class Opcode : uint32_t {
     SetMenu = 1,    // argument: 1 to turn on, 0 to turn off
     SetHotkey = 2,  // argument: a virtual-key code, 0 to disable the hotkey
     Detach = 3,     // argument ignored
+    Rescan = 4,     // argument ignored: look for the build again, from the top
 };
 
 enum class PipeStatus : uint32_t {
