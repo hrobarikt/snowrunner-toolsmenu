@@ -33,6 +33,12 @@ constexpr UINT kTrayMenuToggle = 2;
 constexpr UINT kTrayMenuExit = 3;
 constexpr wchar_t kWindowTitle[] = L"SnowRunner Tools Menu";
 
+// A second copy of the app has nothing to do except hand the click to the
+// first one. Registered rather than a WM_APP constant, because this one
+// crosses processes and only a registered message is guaranteed not to mean
+// something else in whatever other window the broadcast reaches.
+UINT g_show_message = 0;
+
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
 IDXGISwapChain* g_swap_chain = nullptr;
@@ -169,6 +175,14 @@ void ShowTrayMenu(HWND window) {
 LRESULT WINAPI WndProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam)) {
         return true;
+    }
+
+    // Someone ran the app again while this one was already running -- most
+    // likely a double-click on the exe while this copy sat in the tray. What
+    // they wanted was the window.
+    if (g_show_message != 0 && message == g_show_message) {
+        ShowWindowAgain(window);
+        return 0;
     }
 
     switch (message) {
@@ -430,9 +444,19 @@ void DrawWindow(HWND window) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
+    // Registered before anything can receive it, and the same string in every
+    // copy of the app, which is what makes the handoff below find its target.
+    g_show_message = RegisterWindowMessageW(L"SnowRunnerToolsMenuShow");
+
     // One instance: two of these would fight over the same game.
     const HANDLE only = CreateMutexW(nullptr, TRUE, L"snowrunner-toolsmenu-single");
     if (only != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Exiting in silence would look exactly like a broken download. Ask the
+        // copy that is already running to show itself instead, and let that be
+        // what the user sees for their click.
+        if (g_show_message != 0) {
+            PostMessageW(HWND_BROADCAST, g_show_message, 0, 0);
+        }
         return 0;
     }
 
